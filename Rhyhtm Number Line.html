@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Rhythm Number Lines</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background: #f8fafc; }
+    .page { padding: 24px; min-height: 100vh; display: flex; flex-direction: column; align-items: center; gap: 24px; }
+    .card {
+      max-width: 900px; width: 100%; background: #fff; padding: 24px;
+      border-radius: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    h1 { font-size: 20px; font-weight: 600; margin: 0 0 16px; }
+    label { display: block; margin-bottom: 8px; }
+    input[type="number"] {
+      border: 1px solid #ccc; padding: 6px 8px; width: 100%; border-radius: 6px; font-size: 14px; margin-top: 4px; margin-bottom: 12px;
+    }
+    .tempoRow {
+      display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; margin-top: 6px;
+    }
+    input[type="range"] { width: 100%; }
+    button {
+      padding: 10px 16px; border-radius: 8px; border: 1px solid #e5e7eb; cursor: pointer; font-weight: 600;
+    }
+    .play { background: #dcfce7; }
+    .stop { background: #fee2e2; }
+    svg { display: block; margin: 8px auto 0; }
+    .mt24 { margin-top: 24px; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="card">
+      <h1>Rhythm number lines</h1>
+
+      <div style="margin-bottom:8px">
+        <label>
+          Right hand divisions:
+          <input id="rhDiv" type="number" min="1" value="4" />
+        </label>
+
+        <label>
+          Left hand divisions:
+          <input id="lhDiv" type="number" min="1" value="2" />
+        </label>
+
+        <label>
+          Number of beats:
+          <input id="beats" type="number" min="1" value="1" />
+        </label>
+
+        <div class="tempoRow">
+          <div>
+            <label style="display:block;margin-bottom:6px">
+              Tempo: <span id="bpmLabel">90</span> BPM
+            </label>
+            <input id="bpm" type="range" min="1" max="240" step="1" value="90" />
+          </div>
+          <button id="playBtn" class="play">Play</button>
+        </div>
+      </div>
+
+      <svg id="svgRH" width="760" height="90"></svg>
+      <svg id="svgLH" width="760" height="90" class="mt24"></svg>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let rhDivisions = 4;
+    let lhDivisions = 2;
+    let beats = 1;
+    let bpm = 90;
+    let isPlaying = false;
+
+    // Drawing constants
+    const width = 760;
+    const heightHalf = 90;
+    const padding = 56;
+    const minVal = 1;
+    const xFor = (val, maxVal) => {
+      if (maxVal === minVal) return padding;
+      return padding + ((val - minVal) / (maxVal - minVal)) * (width - padding * 2);
+    };
+    const fmt = (v) => {
+      const rounded = Math.round(v * 100) / 100;
+      return String(rounded);
+    };
+    const generatePoints = (divisions, maxVal) => {
+      const d = Math.max(1, parseInt(divisions, 10) || 1);
+      const step = (maxVal - minVal) / d;
+      const pts = [];
+      for (let i = 0; i <= d; i++) pts.push(minVal + i * step);
+      return pts;
+    };
+
+    // Elements
+    const rhInput = document.getElementById('rhDiv');
+    const lhInput = document.getElementById('lhDiv');
+    const beatsInput = document.getElementById('beats');
+    const bpmInput = document.getElementById('bpm');
+    const bpmLabel = document.getElementById('bpmLabel');
+    const playBtn = document.getElementById('playBtn');
+    const svgRH = document.getElementById('svgRH');
+    const svgLH = document.getElementById('svgLH');
+
+    // Audio scheduling vars
+    let audioCtx = null;
+    let schedulerId = null;
+    let startMeasureTime = 0;
+    let nextEventIndex = 0;
+    let currentMeasure = 0;
+    let mergedEvents = []; // array of {offset, hand}
+    let spb = 60 / bpm; // seconds per beat
+
+    // Build merged events based on current state
+    function buildEvents() {
+      const maxVal = Math.max(1, Number(beats) || 1) + 1;
+      const rhPoints = generatePoints(rhDivisions, maxVal);
+      const lhPoints = generatePoints(lhDivisions, maxVal);
+      const toOffsets = (pts) => pts.map(p => p - 1);
+      const rhOffsets = toOffsets(rhPoints);
+      const lhOffsets = toOffsets(lhPoints);
+
+      const evts = [];
+      rhOffsets.forEach(o => evts.push({ offset: o, hand: 'rh' }));
+      lhOffsets.forEach(o => evts.push({ offset: o, hand: 'lh' }));
+      const totalBeats = Math.max(1, Number(beats) || 1);
+      for (let b = 0; b <= totalBeats; b++) evts.push({ offset: b, hand: 'beat' });
+      evts.sort((a, b) => a.offset - b.offset);
+      mergedEvents = evts;
+    }
+
+    // Draw both SVG rows
+    function draw() {
+      const maxVal = Math.max(1, Number(beats) || 1) + 1;
+      // RH
+      const rhPoints = generatePoints(rhDivisions, maxVal);
+      let rhHTML = '';
+      rhHTML += `<text x="${padding}" y="12" font-size="14" fill="#374151">Right hand</text>`;
+      rhHTML += `<line x1="${padding}" y1="60" x2="${width - padding}" y2="60" stroke="#111827" stroke-width="2"></line>`;
+      rhPoints.forEach((p, i) => {
+        const x = xFor(p, maxVal);
+        rhHTML += `
+          <g>
+            <line x1="${x}" y1="45" x2="${x}" y2="75" stroke="#0b84ff" stroke-width="2"></line>
+            <circle cx="${x}" cy="60" r="6" fill="#0b84ff"></circle>
+            <text x="${x}" y="35" font-size="14" text-anchor="middle" fill="#0b84ff">${fmt(p)}</text>
+          </g>`;
+      });
+      svgRH.innerHTML = rhHTML;
+
+      // LH
+      const lhPoints = generatePoints(lhDivisions, maxVal);
+      let lhHTML = '';
+      lhHTML += `<text x="${padding}" y="20" font-size="14" fill="#374151">Left hand</text>`;
+      lhHTML += `<line x1="${padding}" y1="60" x2="${width - padding}" y2="60" stroke="#111827" stroke-width="2"></line>`;
+      lhPoints.forEach((p, i) => {
+        const x = xFor(p, maxVal);
+        lhHTML += `
+          <g>
+            <line x1="${x}" y1="48" x2="${x}" y2="72" stroke="#e11d48" stroke-width="2"></line>
+            <circle cx="${x}" cy="60" r="6" fill="#e11d48"></circle>
+            <text x="${x}" y="90" font-size="14" text-anchor="middle" fill="#e11d48">${fmt(p)}</text>
+          </g>`;
+      });
+      svgLH.innerHTML = lhHTML;
+    }
+
+    function ensureCtx() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+      return audioCtx;
+    }
+
+    function playClick(time, hand, isDownbeat) {
+      const ctx = ensureCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+
+      if (hand === 'rh') osc.frequency.value = 1200;
+      else if (hand === 'lh') osc.frequency.value = 550;
+      else osc.frequency.value = isDownbeat ? 900 : 750;
+
+      const dur = 0.04;
+      const peak = isDownbeat ? 0.34 : 0.22;
+
+      gain.gain.setValueAtTime(0.0001, time);
+      gain.gain.linearRampToValueAtTime(peak, time + 0.006);
+      gain.gain.exponentialRampToValueAtTime(0.0001, time + dur);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(time);
+      osc.stop(time + dur);
+    }
+
+    function start() {
+      const ctx = ensureCtx();
+      if (ctx.state === 'suspended') ctx.resume();
+
+      const lookaheadMs = 25;
+      const scheduleAheadSec = 0.12;
+      spb = 60 / Math.max(1, Math.min(300, Number(bpm) || 90));
+
+      startMeasureTime = ctx.currentTime + 0.05;
+      nextEventIndex = 0;
+      currentMeasure = 0;
+
+      const tick = () => {
+        const now = ctx.currentTime;
+        const totalBeats = Math.max(1, Number(beats) || 1);
+        const measureDur = spb * totalBeats;
+
+        while (true) {
+          const idx = nextEventIndex;
+          const event = mergedEvents[idx];
+          const measureStart = startMeasureTime + currentMeasure * measureDur;
+          const eventTime = measureStart + event.offset * spb;
+
+          if (eventTime < now + scheduleAheadSec) {
+            const isDownbeat = event.hand === 'beat' && event.offset === 0;
+            playClick(eventTime, event.hand, isDownbeat);
+
+            nextEventIndex += 1;
+            if (nextEventIndex >= mergedEvents.length) {
+              nextEventIndex = 0;
+              currentMeasure += 1;
+            }
+          } else {
+            break;
+          }
+        }
+      };
+
+      schedulerId = setInterval(tick, lookaheadMs);
+      isPlaying = true;
+      playBtn.textContent = 'Stop';
+      playBtn.classList.remove('play');
+      playBtn.classList.add('stop');
+    }
+
+    function stop() {
+      if (schedulerId) clearInterval(schedulerId);
+      schedulerId = null;
+      isPlaying = false;
+      playBtn.textContent = 'Play';
+      playBtn.classList.remove('stop');
+      playBtn.classList.add('play');
+    }
+
+    function restartIfPlaying() {
+      if (!isPlaying) return;
+      stop();
+      setTimeout(start, 50);
+    }
+
+    // Wire up inputs
+    rhInput.addEventListener('input', () => {
+      rhDivisions = parseInt(rhInput.value || '1', 10);
+      draw();
+      buildEvents();
+      restartIfPlaying();
+    });
+    lhInput.addEventListener('input', () => {
+      lhDivisions = parseInt(lhInput.value || '1', 10);
+      draw();
+      buildEvents();
+      restartIfPlaying();
+    });
+    beatsInput.addEventListener('input', () => {
+      beats = parseInt(beatsInput.value || '1', 10);
+      draw();
+      buildEvents();
+      restartIfPlaying();
+    });
+    bpmInput.addEventListener('input', () => {
+      bpm = parseInt(bpmInput.value || '90', 10);
+      bpmLabel.textContent = bpm;
+      restartIfPlaying();
+    });
+
+    playBtn.addEventListener('click', () => {
+      if (isPlaying) stop(); else start();
+    });
+
+    // Initial render
+    draw();
+    buildEvents();
+  </script>
+</body>
+</html>
